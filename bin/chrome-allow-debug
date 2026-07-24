@@ -1,0 +1,120 @@
+#!/usr/bin/env zsh
+#
+# chrome-allow-debug — approve Chrome's native "Allow remote debugging?" dialog
+# from the command line (a lightweight alternative to the background daemon).
+#
+# This uses AppleScript / System Events, so the app running it (your terminal)
+# must have Accessibility permission in
+# System Settings -> Privacy & Security -> Accessibility.
+#
+# Usage:
+#   chrome-allow-debug              Approve once, if the dialog is currently showing.
+#   chrome-allow-debug --watch      Poll continuously; approve whenever it appears.
+
+set -euo pipefail
+
+PROC="Google Chrome"
+WATCH=0
+INTERVAL=1
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -w|--watch) WATCH=1 ;;
+    -i|--interval) INTERVAL="${2:?--interval needs a value}"; shift ;;
+    -p|--process) PROC="${2:?--process needs a value}"; shift ;;
+    -h|--help)
+      cat <<EOF
+chrome-allow-debug — approve Chrome's "Allow remote debugging?" dialog.
+
+Usage:
+  chrome-allow-debug              Approve once, if the dialog is currently showing.
+  chrome-allow-debug --watch      Poll continuously and approve whenever it appears.
+
+Options:
+  -w, --watch          Keep running; click Allow each time the dialog pops up.
+  -i, --interval N     Poll interval in seconds for --watch (default: 1).
+  -p, --process NAME   Browser process name (default: "Google Chrome";
+                       e.g. "Google Chrome Beta", "Brave Browser", "Microsoft Edge").
+  -h, --help           Show this help.
+
+Requires Accessibility permission for your terminal app in
+System Settings -> Privacy & Security -> Accessibility.
+EOF
+      exit 0 ;;
+    *) echo "chrome-allow-debug: unknown argument: $1" >&2; exit 2 ;;
+  esac
+  shift
+done
+
+# Find a modal sheet that looks like the remote-debugging prompt (its text mentions
+# "debug") and press its "Allow" button. Restricting to such sheets means normal
+# web content and other native dialogs are never clicked.
+APPLESCRIPT=$(cat <<'OSA'
+on run argv
+  set procName to item 1 of argv
+  tell application "System Events"
+    if not (exists process procName) then return "no-process"
+    tell process procName
+      repeat with w in windows
+        repeat with s in (sheets of w)
+          set contentsList to entire contents of s
+          set isDebug to false
+          repeat with e in contentsList
+            try
+              if (role of e) is "AXStaticText" then
+                if ((value of e) as text) contains "debug" then set isDebug to true
+              end if
+            end try
+          end repeat
+          if isDebug then
+            repeat with e in contentsList
+              try
+                if (role of e) is "AXButton" and (description of e) is "Allow" then
+                  perform action "AXPress" of e
+                  return "clicked"
+                end if
+              end try
+            end repeat
+          end if
+        end repeat
+      end repeat
+    end tell
+  end tell
+  return "not-found"
+end run
+OSA
+)
+
+approve_once() {
+  local out
+  if ! out=$(osascript - "$PROC" <<OSA 2>&1
+$APPLESCRIPT
+OSA
+  ); then
+    if [[ "$out" == *"not allowed assistive access"* || "$out" == *"is not allowed"* || "$out" == *"-1719"* ]]; then
+      echo "[chrome-allow-debug] ERROR: needs Accessibility permission." >&2
+      echo "  Grant your terminal app access in System Settings -> Privacy & Security -> Accessibility, then retry." >&2
+      return 3
+    fi
+    echo "[chrome-allow-debug] osascript error: $out" >&2
+    return 1
+  fi
+  printf '%s' "$out"
+}
+
+if [[ "$WATCH" == 1 ]]; then
+  echo "[chrome-allow-debug] watching '$PROC' for the remote-debugging dialog (every ${INTERVAL}s). Ctrl-C to stop."
+  while true; do
+    res="$(approve_once || true)"
+    [[ "$res" == "clicked" ]] && echo "[chrome-allow-debug] approved at $(date '+%H:%M:%S')"
+    sleep "$INTERVAL"
+  done
+else
+  res="$(approve_once)"
+  case "$res" in
+    clicked)    echo "[chrome-allow-debug] approved." ;;
+    not-found)  echo "[chrome-allow-debug] no remote-debugging dialog is showing." ;;
+    no-process) echo "[chrome-allow-debug] '$PROC' is not running." ;;
+    *)          echo "[chrome-allow-debug] $res" ;;
+  esac
+fi
