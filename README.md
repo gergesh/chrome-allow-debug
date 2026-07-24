@@ -2,6 +2,10 @@
 
 Auto-approve Chrome's native **"Allow remote debugging?"** consent dialog on macOS — and *only* that dialog.
 
+<p align="center">
+  <img width="640" alt="The 'Allow remote debugging?' consent dialog" src="docs/dialog.png">
+</p>
+
 ## The problem
 
 Recent Chromium builds (Chrome, Edge, Brave, …) show a native macOS consent sheet the moment an external app attaches over the DevTools/CDP protocol:
